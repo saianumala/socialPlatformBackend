@@ -40,7 +40,7 @@ export async function cloudinaryDelete(cloudinaryURL: string) {
       if (error) {
         console.log("Error:", error);
       } else {
-        console.log("post deleted");
+        console.log("prev post or profile deleted");
       }
     }
   );

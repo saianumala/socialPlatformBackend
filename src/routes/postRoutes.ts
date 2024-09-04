@@ -12,7 +12,11 @@ import { userAuthorization } from "../middleware/cookieAuth";
 const router = express.Router();
 
 router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
-  const { username } = req.user;
+  const username = req.user.username;
+  const limitNumber = req.query.limit;
+
+  const limit = parseInt(limitNumber as string) || 7;
+
   try {
     const user = await prisma.user.findUnique({
       where: {
@@ -24,23 +28,21 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
         username: true,
       },
     });
-    if (user && !user.following) {
-      // write logic to exclude the login user posts
-      const posts = await prisma.user.findMany();
-      res.json({ loggedInUser: username, posts: posts });
+    if (!user) {
+      throw new Error("user not found");
     }
-    // let authorIds:[] = [];
-    // for (let i = 0; i < user?.following.length; i++) {
-    //   if (user.following[i]) {
-    //     authorIds.push({ authorId: user.following[i].userId });
-    //   } else {
-    //     continue;
-    //   }
-    // }
+    if (!user.following || user.following.length === 0) {
+      const posts = await prisma.post.findMany({
+        take: limit,
+      });
+      return res.json({ loggedInUser: username, posts: posts });
+    }
+
     const authornames =
       user?.following?.map((following) => following.followingUsername) || [];
     console.log("authorName's: ", authornames);
     const followingUserPosts = await prisma.post.findMany({
+      take: limit,
       where: {
         authorName: {
           in: authornames,
@@ -54,16 +56,95 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
           },
         },
       },
+      orderBy: {
+        createdAt: "desc",
+      },
     });
-    // for (let i = 0; i < followingUserPosts.length; i++) {
-    //   console.log(new Date(followingUserPosts[i].createdAt));
-    // }
-    // console.log("followingUserPosts: ", followingUserPosts.sort((a,b)=> new Date(b.createdAt) - a.createdAt));
-    res.json({ loggedInUser: username, posts: followingUserPosts }).status(200);
+
+    const nextCursor =
+      followingUserPosts.length > 0
+        ? followingUserPosts[followingUserPosts.length - 1].postId
+        : null;
+
+    res
+      .status(200)
+      .json({ loggedInUser: username, posts: followingUserPosts, nextCursor });
   } catch (error: any) {
-    res.json({ message: error.message, error: error });
+    res.status(error.code).json({ message: error.message, error: error });
   }
 });
+
+router.get(
+  "/morefollowingUsersPosts/:currentCursor",
+  userAuthorization,
+  async (req, res) => {
+    const username = req.user.username;
+
+    const currentCursor = req.params.currentCursor;
+
+    const limitNumber = req.query.limit;
+
+    const limit = parseInt(limitNumber as string) || 7;
+
+    try {
+      const user = await prisma.user.findUnique({
+        where: {
+          username: username,
+        },
+        select: {
+          following: true,
+          profilePicture: true,
+          username: true,
+        },
+      });
+      if (user && !user.following) {
+        // write logic to exclude the login user posts
+        const posts = await prisma.user.findMany();
+        res.json({ loggedInUser: username, posts: posts });
+      }
+
+      const authornames =
+        user?.following?.map((following) => following.followingUsername) || [];
+      console.log("authorName's: ", authornames);
+      const moreFollowingUserPosts = await prisma.post.findMany({
+        take: limit,
+        skip: 1,
+        cursor: {
+          postId: currentCursor,
+        },
+        where: {
+          authorName: {
+            in: authornames,
+          },
+        },
+        include: {
+          author: {
+            select: {
+              username: true,
+              profilePicture: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      });
+
+      const nextCursor =
+        moreFollowingUserPosts.length > 0
+          ? moreFollowingUserPosts[moreFollowingUserPosts.length - 1].postId
+          : null;
+
+      res.status(200).json({
+        loggedInUser: username,
+        morePosts: moreFollowingUserPosts,
+        nextCursor,
+      });
+    } catch (error: any) {
+      res.status(error.code).json({ message: error.message, error: error });
+    }
+  }
+);
 
 router.post(
   "/newPost",
@@ -213,6 +294,7 @@ router.patch(
 
 router.delete("/deletePost", userAuthorization, async (req, res) => {
   const { postId, loggedInUsername } = req.body;
+  console.log("delepost called");
 
   try {
     const post = await prisma.post.findUnique({
@@ -236,7 +318,7 @@ router.delete("/deletePost", userAuthorization, async (req, res) => {
         postId: postId,
       },
     });
-    res.json({ message: "Post deleted" }).status(200);
+    res.status(200).json({ message: "Post deleted" });
   } catch (error: any) {
     if (error.code === "P2002") {
       // Handle Prisma error code for non-existent post
