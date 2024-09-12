@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { multerUpload } from "../utils/multerUploader";
+import { multerUploadMiddleware } from "../middleware/multerUploader";
 import prisma from "../db";
-import { string, z } from "zod";
+import { z } from "zod";
 import {
   cloudinaryDelete,
   cloudinaryUpload,
@@ -11,6 +11,7 @@ import jwt from "jsonwebtoken";
 import { sendEmail } from "../utils/mailer";
 import { userAuthorization } from "../middleware/cookieAuth";
 import fs from "fs";
+import { v4 as uuidv4 } from "uuid";
 
 const router = Router();
 
@@ -70,18 +71,21 @@ router.post("/signup", async (req, res) => {
       );
     }
     const newHashedPassword = await hashPassword(password);
+    const verifyToken = uuidv4();
 
     const newUser = await prisma.user.create({
       data: {
         email: email,
         password: newHashedPassword,
-        profilePicture: process.env.DEFAULT_PIC,
+        profilePictureURL: process.env.DEFAULT_PIC || "",
         username: username,
+        verifyToken: verifyToken,
+        VerificationExpiry: Date.now() + 3600000,
       },
       select: {
         userId: true,
         email: true,
-        profilePicture: true,
+        profilePictureURL: true,
         username: true,
       },
     });
@@ -89,7 +93,12 @@ router.post("/signup", async (req, res) => {
     if (!newUser) {
       throw new Error("error while creating user");
     }
-    await sendEmail({ emailType: "VERIFY", userId: newUser.userId });
+    await sendEmail({
+      emailType: "VERIFY",
+      token: verifyToken,
+      username: newUser.username,
+      email: newUser.email,
+    });
 
     res.status(200).json({ message: "signup successfull" });
   } catch (error: any) {
@@ -157,7 +166,33 @@ router.post("/signIn", async (req, res) => {
       throw new Error("Incorrect Password");
     }
     if (!user.isVerified) {
-      const res = await sendEmail({ emailType: "VERIFY", userId: user.userId });
+      if (user.VerificationExpiry && user.VerificationExpiry < Date.now()) {
+        const token = uuidv4();
+
+        await prisma.user.update({
+          where: {
+            email: email,
+          },
+          data: {
+            verifyToken: token,
+            VerificationExpiry: Date.now() + 3600000,
+          },
+        });
+
+        await sendEmail({
+          emailType: "VERIFY",
+          username: user.username,
+          email: user.email,
+          token: token,
+        });
+      } else {
+        await sendEmail({
+          emailType: "VERIFY",
+          username: user.username,
+          email: user.email,
+          token: user.verifyToken || "",
+        });
+      }
 
       throw new Error("a verification mail has been sent to your email");
     }
@@ -186,7 +221,7 @@ router.post("/signIn", async (req, res) => {
         message: "you are logged in",
         data: {
           username: user.username,
-          profilePic: user.profilePicture,
+          profilePic: user.profilePictureURL,
           email: user.email,
           accessToken: token,
         },
@@ -211,7 +246,7 @@ router.get("/signOut", userAuthorization, (req, res) => {
 router.patch(
   "/updateProfilepic",
   userAuthorization,
-  multerUpload.single("profilePic"),
+  multerUploadMiddleware("profilePic"),
   async (req, res) => {
     let {
       loggedInUsername,
@@ -219,9 +254,10 @@ router.patch(
       loggedInUsername: string;
     } = req.body;
 
-    const filePath = req.file?.path;
-    console.log("filePath", filePath);
     try {
+      if (req.file?.mimetype.split("/")[0] !== "image") {
+        throw new Error("file type not supported");
+      }
       if (loggedInUsername !== req.user.username) {
         throw new Error("unAuthorized user");
       }
@@ -233,13 +269,17 @@ router.patch(
       if (!user) {
         throw new Error("user not found");
       }
-      if (user.profilePicture) {
-        await cloudinaryDelete(user.profilePicture);
+      if (user.profilePictureURL) {
+        await cloudinaryDelete(user.profilePictureURL);
       }
-      if (!filePath) {
+      if (!req.file || !req.file.path) {
         throw new Error("update failed due to unsufficient data");
       }
-      const cloudinaryUploadResponse = await cloudinaryUpload(filePath);
+      const cloudinaryUploadResponse = await cloudinaryUpload(
+        req.file.path,
+        req.file.fieldname,
+        req.file.originalname
+      );
       console.log(cloudinaryUploadResponse);
 
       await prisma.user.update({
@@ -247,7 +287,7 @@ router.patch(
           username: user.username,
         },
         data: {
-          profilePicture: cloudinaryUploadResponse.url,
+          profilePictureURL: cloudinaryUploadResponse.url,
         },
       });
 
@@ -262,12 +302,14 @@ router.patch(
 router.patch("/updateUsername", userAuthorization, async (req, res) => {
   const { username }: { username: string } = req.body;
   try {
-    const existingUsername = await prisma.user.findUnique({
+    console.log(username);
+    const existingUserWithUsername = await prisma.user.findUnique({
       where: {
-        username: req.user.username,
+        username: username,
       },
     });
-    if (existingUsername) {
+    console.log(existingUserWithUsername);
+    if (existingUserWithUsername) {
       throw new Error(`${username} is already taken`);
     }
     const user = await prisma.user.update({
@@ -292,7 +334,7 @@ router.patch("/updateEmail", userAuthorization, async (req, res) => {
   try {
     const existingemail = await prisma.user.findUnique({
       where: {
-        email: req.user.email,
+        email: email,
       },
     });
     if (existingemail) {
@@ -315,12 +357,115 @@ router.patch("/updateEmail", userAuthorization, async (req, res) => {
   }
 });
 
+router.get("/passwordCheck/:password", userAuthorization, async (req, res) => {
+  const { password } = req.params;
+  try {
+    const user = await prisma.user.findUnique({
+      where: {
+        userId: req.user.userId,
+      },
+    });
+    if (!user) {
+      throw new Error("user not found");
+    }
+    const isPasswordCorrect = await bcryptjs.compare(password, user.password);
+    if (!isPasswordCorrect) {
+      throw new Error("password incorrect");
+    }
+    res.status(200).json({ message: "success" });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message });
+  }
+});
+
+router.post("/sendresetlink", async (req, res) => {
+  const { email } = req.body;
+  console.log(email);
+  try {
+    const user = await prisma.user.findUnique({
+      where: {
+        email: email,
+      },
+      select: {
+        email: true,
+        username: true,
+      },
+    });
+    if (!user) {
+      throw new Error(`there is no user with this email`);
+    }
+    const passwordResetToken = uuidv4();
+    await prisma.user.update({
+      where: {
+        email: email,
+      },
+      data: {
+        passwordResetToken: passwordResetToken,
+        passwordResetExpiry: Date.now() + 1200000,
+      },
+    });
+    const ress = await sendEmail({
+      emailType: "RESETPASSWORD",
+      username: user.username,
+      email: user.email,
+      token: passwordResetToken,
+    });
+    console.log(ress);
+    res.status(200).json({ message: "reset link sent" });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message, error: error });
+  }
+});
+router.patch("/resetPassword", async (req, res) => {
+  const token = req.query.token;
+  const { newPassword } = req.body;
+
+  try {
+    if (!token || typeof token !== "string") {
+      throw new Error("require token to change the password");
+    }
+    const user = await prisma.user.findUnique({
+      where: {
+        passwordResetToken: token,
+      },
+    });
+    if (!user) {
+      throw new Error("invalid token");
+    }
+    if (user.passwordResetExpiry && user.passwordResetExpiry < Date.now()) {
+      throw new Error("token expired, resend the link again");
+    }
+    if (newPassword.length < 8) {
+      throw new Error("password should be atleast 8 characters");
+    }
+    const hashedPassword = await bcryptjs.hash(newPassword, 11);
+
+    await prisma.user.update({
+      where: {
+        username: user.username,
+      },
+      data: {
+        password: hashedPassword,
+        passwordResetExpiry: null,
+        passwordResetToken: null,
+      },
+    });
+
+    res.status(200).json({ message: "success" });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message });
+  }
+});
 router.patch("/changePassword", userAuthorization, async (req, res) => {
   const { newPassword } = req.body;
 
   try {
+    if (newPassword.length < 8) {
+      throw new Error("password should be atleast 8 characters");
+    }
     const hashedPassword = await bcryptjs.hash(newPassword, 11);
-    const passwordChange = await prisma.user.update({
+
+    await prisma.user.update({
       where: {
         username: req.user.username,
       },
@@ -328,9 +473,7 @@ router.patch("/changePassword", userAuthorization, async (req, res) => {
         password: hashedPassword,
       },
     });
-    if (!passwordChange) {
-      throw new Error("unable to change password");
-    }
+
     res.status(200).json({ message: "success" });
   } catch (error: any) {
     res.status(400).json({ message: error.message, error: error });
@@ -349,7 +492,7 @@ router.get("/userSearch/:username", userAuthorization, async (req, res) => {
       select: {
         userId: true,
         username: true,
-        profilePicture: true,
+        profilePictureURL: true,
       },
     });
     if (!users) {
@@ -373,7 +516,7 @@ router.get("/profile/:username", userAuthorization, async (req, res) => {
           select: {
             followedBy: {
               select: {
-                profilePicture: true,
+                profilePictureURL: true,
               },
             },
             followedByUsername: true,
@@ -384,14 +527,14 @@ router.get("/profile/:username", userAuthorization, async (req, res) => {
           select: {
             following: {
               select: {
-                profilePicture: true,
+                profilePictureURL: true,
               },
             },
             followingUsername: true,
             followId: true,
           },
         },
-        profilePicture: true,
+        profilePictureURL: true,
         username: true,
         userId: true,
         posts: {
@@ -399,7 +542,7 @@ router.get("/profile/:username", userAuthorization, async (req, res) => {
             author: {
               select: {
                 username: true,
-                profilePicture: true,
+                profilePictureURL: true,
               },
             },
           },
@@ -526,12 +669,79 @@ router.get("/suggestions", userAuthorization, async (req, res) => {
       select: {
         userId: true,
         username: true,
-        profilePicture: true,
+        profilePictureURL: true,
       },
     });
     res.status(200).json({ message: "success", data: users });
   } catch (error: any) {
     res.status(error.code).json({ message: "unSuccessfull" });
+  }
+});
+router.get("/likes", userAuthorization, async (req, res) => {
+  const userId = req.user.userId;
+
+  const order = req.query.orderBy;
+  const orderBy = order === "asc" || order === "desc" ? order : "desc";
+  try {
+    const userLikes = await prisma.like.findMany({
+      where: {
+        likedByUsername: req.user.username,
+      },
+      include: {
+        post: {
+          include: {
+            author: {
+              select: {
+                username: true,
+                profilePictureURL: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        createdAt: orderBy,
+      },
+    });
+
+    res.status(200).json({ message: "success", data: userLikes });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message, error: error });
+  }
+});
+
+router.get("/comments", userAuthorization, async (req, res) => {
+  const userId = req.user.userId;
+  const order = req.query.orderBy;
+  const orderBy = order === "asc" || order === "desc" ? order : "desc";
+  try {
+    const userComments = await prisma.comment.findMany({
+      where: {
+        commentedByUsername: req.user.username,
+      },
+      include: {
+        post: {
+          include: {
+            author: {
+              select: {
+                username: true,
+                profilePictureURL: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: {
+        createdAt: orderBy,
+      },
+    });
+
+    if (!userComments) {
+      throw new Error("user not found, try logging in again");
+    }
+    res.status(200).json({ message: "success", data: userComments });
+  } catch (error: any) {
+    res.status(400).json({ message: error.message, error: error });
   }
 });
 

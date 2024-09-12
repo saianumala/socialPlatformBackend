@@ -13,61 +13,68 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User{
-
-  userId String @id @default(uuid())
-  username String @unique
-  email String @unique
-  password String
-  profilePicture String?
-  following Follow[] @relation("follower")
-  followers Follow[] @relation("following")
-  posts post[]
-  comments comment[]
-  likes like[]
-  isVerified Boolean @default(false)
-  verifyToken String? @unique
+model User {
+  userId             String    @id @default(uuid())
+  username           String    @unique
+  email              String    @unique
+  password           String
+  profilePictureURL     String
+  following          Follow[]  @relation("follower")
+  followers          Follow[]  @relation("following")
+  posts              post[]
+  comments           comment[]
+  likes              like[]
+  passwordResetToken String? @unique
+  passwordResetExpiry BigInt?
+  isVerified         Boolean   @default(false)
+  verifyToken        String?   @unique
   VerificationExpiry BigInt?
 }
 
-model post{
-  postId String @id @default(uuid())
-  image String @unique
+model post {
+  postId      String      @id @default(uuid())
+  contentURL  String    @unique
+  contentType ContentType
   description String?
-  likes like[]
-  comments comment[]
-  authorName String
-  author User @relation(fields: [authorName], references:[username])
-  createdAt DateTime @default(now())
+  likes       like[]
+  comments    comment[]
+  authorName  String
+  author      User        @relation(fields: [authorName], references: [username])
+  createdAt   DateTime    @default(now())
 }
-model Follow{
-  followId String @id @default(uuid())
-  followedByUsername String
-  followingUsername String
-  followedBy User @relation("follower",fields: [followedByUsername], references: [username])
-  following User @relation("following",fields: [followingUsername], references: [username])
-  @@unique([followedByUsername, followingUsername])
 
+model Follow {
+  followId           String @id @default(uuid())
+  followedByUsername String
+  followingUsername  String
+  followedBy         User   @relation("follower", fields: [followedByUsername], references: [username])
+  following          User   @relation("following", fields: [followingUsername], references: [username])
+
+  @@unique([followedByUsername, followingUsername])
 }
-model like{
-  likeId String @id @default(uuid())
+
+model like {
+  likeId          String   @id @default(uuid())
   likedByUsername String
-  likedBy User @relation(fields: [likedByUsername], references: [username])
-  postId String
-  post post @relation(fields:[postId], references:[postId]) 
-  createdAt DateTime @default(now())
+  likedBy         User     @relation(fields: [likedByUsername], references: [username])
+  postId          String
+  post            post     @relation(fields: [postId], references: [postId])
+  createdAt       DateTime @default(now())
+
   @@unique([likedByUsername, postId])
 }
 
-model comment{
-  commentId String @id @default(uuid())
+model comment {
+  commentId           String   @id @default(uuid())
   commentedByUsername String
-  commentDescription String
-  commentedBy User @relation(fields: [commentedByUsername], references: [username])
-  postId String
-  post post @relation(fields:[postId], references:[postId])
-  createdAt DateTime @default(now())
+  commentDescription  String
+  commentedBy         User     @relation(fields: [commentedByUsername], references: [username])
+  postId              String
+  post                post     @relation(fields: [postId], references: [postId])
+  createdAt           DateTime @default(now())
 }
 
-
-
+enum ContentType {
+  image
+  video
+}

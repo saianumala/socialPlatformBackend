@@ -9,10 +9,16 @@ cloudinary.config({
 });
 
 export async function cloudinaryUpload(
-  filePath: string
+  filePath: string,
+  fieldname: string,
+  filename: string
 ): Promise<UploadApiResponse> {
   const uploadResult = await cloudinary.uploader.upload(filePath, {
     resource_type: "auto",
+    // use_filename: true,
+    public_id: filename.split(".")[0].slice(0, 40) + Date.now(),
+    folder: fieldname,
+    allowed_formats: ["jpg", "mp4", "jpeg", "mov", "png", "gif"],
   });
   if (!uploadResult) {
     console.log("upload failed inside uploader");
@@ -40,7 +46,7 @@ export async function cloudinaryDelete(cloudinaryURL: string) {
       if (error) {
         console.log("Error:", error);
       } else {
-        console.log("prev post or profile deleted");
+        console.log("prev post or profile deleted", result);
       }
     }
   );

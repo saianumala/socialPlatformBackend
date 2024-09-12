@@ -25,7 +25,7 @@ export async function userAuthorization(
       },
       select: {
         username: true,
-        profilePicture: true,
+        profilePictureURL: true,
         userId: true,
         email: true,
       },

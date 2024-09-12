@@ -6,7 +6,7 @@ import {
   cloudinaryUpload,
 } from "../utils/cloudinaryUploader";
 import prisma from "../db";
-import { multerUpload } from "../utils/multerUploader";
+import { multerUploadMiddleware } from "../middleware/multerUploader";
 import { userAuthorization } from "../middleware/cookieAuth";
 
 const router = express.Router();
@@ -24,7 +24,7 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
       },
       select: {
         following: true,
-        profilePicture: true,
+        profilePictureURL: true,
         username: true,
       },
     });
@@ -34,6 +34,14 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
     if (!user.following || user.following.length === 0) {
       const posts = await prisma.post.findMany({
         take: limit,
+        include: {
+          author: {
+            select: {
+              username: true,
+              profilePictureURL: true,
+            },
+          },
+        },
       });
       return res.json({ loggedInUser: username, posts: posts });
     }
@@ -52,7 +60,7 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
         author: {
           select: {
             username: true,
-            profilePicture: true,
+            profilePictureURL: true,
           },
         },
       },
@@ -60,11 +68,12 @@ router.get("/followingUsersPosts", userAuthorization, async (req, res) => {
         createdAt: "desc",
       },
     });
-
     const nextCursor =
       followingUserPosts.length > 0
         ? followingUserPosts[followingUserPosts.length - 1].postId
         : null;
+
+    console.log(followingUserPosts);
 
     res
       .status(200)
@@ -93,7 +102,7 @@ router.get(
         },
         select: {
           following: true,
-          profilePicture: true,
+          profilePictureURL: true,
           username: true,
         },
       });
@@ -121,7 +130,7 @@ router.get(
           author: {
             select: {
               username: true,
-              profilePicture: true,
+              profilePictureURL: true,
             },
           },
         },
@@ -149,20 +158,22 @@ router.get(
 router.post(
   "/newPost",
   userAuthorization,
-  multerUpload.single("postFile"),
+  multerUploadMiddleware("postFile"),
   async (req, res) => {
     try {
-      // image or video to post, description , authorId
-      const filePath = req.file?.path;
       const body = req.body;
-      console.log("body", body);
-      console.log("filePath", filePath);
-      if (!filePath) {
+      console.log("reached new post route");
+      if (!req.file || !req.file.path) {
         throw new Error("upload failed, please try again");
       }
-      // console.log(req);
-      const uploadResult = await cloudinaryUpload(filePath);
-      console.log("upload Result", uploadResult);
+      console.log("before cloudinary upload");
+      const uploadResult = await cloudinaryUpload(
+        req.file.path,
+        req.file.fieldname,
+        req.file.originalname
+      );
+      console.log("after cloudinary upload");
+
       if (!uploadResult) {
         throw new Error("upload failed");
       }
@@ -174,9 +185,12 @@ router.post(
       if (!user || !user.userId) {
         throw new Error("user is not logged in");
       }
+      const contentType =
+        req.file?.mimetype.split("/")[0] === "image" ? "image" : "video";
       const newPost = await prisma.post.create({
         data: {
-          image: uploadResult.url,
+          contentType: contentType,
+          contentURL: uploadResult.url,
           authorName: user?.username,
           description: body.description,
         },
@@ -188,7 +202,7 @@ router.post(
       res.json({ postDetails: newPost }).status(200);
       // get the url from upload result and store it along with other details in the database
     } catch (error: any) {
-      res.json({ error: error.message }).status(400);
+      res.status(400).json({ error: error.message });
     }
   }
 );
@@ -205,7 +219,7 @@ router.get("/singlePost/:postId", async (req, res) => {
         author: {
           select: {
             username: true,
-            profilePicture: true,
+            profilePictureURL: true,
           },
         },
         likes: true,
@@ -224,7 +238,7 @@ router.get("/singlePost/:postId", async (req, res) => {
 router.patch(
   "/updatePost",
   userAuthorization,
-  multerUpload.single("postFile"),
+  multerUploadMiddleware("postFile"),
   async (req, res) => {
     let {
       description,
@@ -259,13 +273,21 @@ router.patch(
         description = null;
       }
       if (req.file?.path) {
-        const uploadResult = await cloudinaryUpload(req.file.path);
+        const contentType =
+          req.file?.mimetype.split("/")[0] === "image" ? "image" : "video";
+        const uploadResult = await cloudinaryUpload(
+          req.file.path,
+          req.file.fieldname,
+          req.file.originalname
+        );
+
         updatedPost = await prisma.post.update({
           where: {
             postId: postId,
           },
           data: {
-            image: uploadResult.url,
+            contentType: contentType,
+            contentURL: uploadResult.url,
             description: description,
           },
         });
@@ -311,7 +333,7 @@ router.delete("/deletePost", userAuthorization, async (req, res) => {
     ) {
       throw new Error("you are not authorized to delete this post");
     }
-    await cloudinaryDelete(post.image);
+    await cloudinaryDelete(post.contentURL);
 
     await prisma.post.delete({
       where: {
@@ -384,7 +406,7 @@ router.get("/getLikes/:postId", userAuthorization, async (req, res) => {
       include: {
         likedBy: {
           select: {
-            profilePicture: true,
+            profilePictureURL: true,
             username: true,
           },
         },
@@ -482,7 +504,7 @@ router.get("/getComments/:postId", userAuthorization, async (req, res) => {
       include: {
         commentedBy: {
           select: {
-            profilePicture: true,
+            profilePictureURL: true,
             username: true,
           },
         },

@@ -1,27 +1,18 @@
 import nodemailer from "nodemailer";
 import prisma from "../db";
-import { v4 as uuidv4 } from "uuid";
 
 export async function sendEmail({
   emailType,
-  userId,
+  email,
+  username,
+  token,
 }: {
-  emailType: string;
-  userId: string;
+  emailType: "VERIFY" | "RESETPASSWORD";
+  email: string;
+  username: string;
+  token: string;
 }) {
-  const verifyToken = uuidv4();
-
   try {
-    const user = await prisma.user.update({
-      where: {
-        userId,
-      },
-      data: {
-        verifyToken: verifyToken,
-        VerificationExpiry: Date.now() + 3600000,
-      },
-    });
-
     var transport = nodemailer.createTransport({
       host: "sandbox.smtp.mailtrap.io",
       port: 2525,
@@ -33,20 +24,29 @@ export async function sendEmail({
 
     const mailSent = await transport.sendMail({
       from: "info@mailtrap.club",
-      to: user?.email, // list of receivers
+      to: email, // list of receivers
       subject:
         emailType === "VERIFY" ? "Verify your email" : "Reset your password",
       text:
         emailType === "VERIFY"
-          ? `Hi ${user?.username}, Welcome to social platform.`
-          : `Hi ${user?.username}, reset your password.`,
-      html: `<p>Click <a href="http://localhost:5000/verifyemail/${verifyToken}">here</a> to ${
-        emailType === "VERIFY" ? "verify your email" : "reset your password"
-      }
-                or copy and paste the link below in your browser. <br> ${
-                  process.env.ORIGIN
-                }/verifyemail/${verifyToken}
-                </p>`,
+          ? `Hi ${username}, Welcome to social platform.`
+          : `Hi ${username}, reset your password.`,
+      html:
+        emailType === "VERIFY"
+          ? `
+      <div>
+        <p>
+        Click <a href="http://localhost:5000/verifyemail/${token}">here</a> to verify your email
+        or copy and paste the link below in your browser. <br> ${process.env.ORIGIN}/verifyemail/${token}
+        </p>
+      </div>`
+          : `
+      <div>
+        <p>
+        Click <a href="http://localhost:5000/account/passwordreset/confirm?token=${token}">here</a> to reset your password
+        or copy and paste the link below in your browser. <br> ${process.env.ORIGIN}/password/reset?token=${token}
+        </p>
+      </div>`,
     });
     return mailSent;
   } catch (error) {
